@@ -1176,11 +1176,10 @@ def showScreen():
     # Draw 2D UI elements
     draw_health_bar()
 
-    cam_mode_text = "Orbit"
     if first_person:
         cam_mode_text = "First Person"
         
-    draw_text(10, WINDOW_H - 30, f"Phase-4: Guns & Shields | Cam: {cam_mode_text}")
+    draw_text(10, WINDOW_H - 30, f"Boss Arena: Circle of Fury ")
     draw_text(10, WINDOW_H - 60, f"Boss HP: {boss_hp}")
     
     alive_count = 0
@@ -1245,7 +1244,7 @@ def main():
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_W, WINDOW_H)
     glutInitWindowPosition(50, 50)
-    glutCreateWindow(b"Phase 4 - Guns & Shields")
+    glutCreateWindow(b"Boss Arena: Circle of Fury")
 
     init_fighters()
     glEnable(GL_DEPTH_TEST)
