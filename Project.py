@@ -22,10 +22,6 @@ boss_y = 0.0
 boss_z = 0.0
 boss_hp = 1000
 
-# Boss Hitbox (Relative to Center)
-BOSS_BOX_MIN = [-90, -70, 0]
-BOSS_BOX_MAX = [90, 70, 260]
-
 quadric = None
 
 # Boss State Variables
@@ -40,6 +36,7 @@ boss_arm_dir = 1
 boss_did_damage = False
 boss_facing_angle = 0.0 
 game_over = False
+cheat_mode = False
 
 # Game Entities
 fighters = []
@@ -107,6 +104,7 @@ def reset_game():
     global boss_state, boss_timer, boss_arm_angle, boss_did_damage
     global boss_facing_angle, game_over, boss_hp
     global spear_state, spear_anim_t, spear_cooldown
+    global cheat_mode
     
     # Reset Boss Logic
     boss_state = "IDLE"
@@ -118,6 +116,7 @@ def reset_game():
     
     # Reset Game State
     game_over = False
+    cheat_mode = False
     
     # Reset Spear Logic
     spear_state = "READY"
@@ -547,7 +546,7 @@ def update_boss_rotation():
         while diff < -180: 
             diff += 360
             
-        boss_facing_angle += diff * 0.1
+        boss_facing_angle += diff * 0.15
 
 
 def boss_smash_damage():
@@ -569,7 +568,7 @@ def boss_smash_damage():
     hit_x = boss_x + rot_x
     hit_y = boss_y + rot_y
     
-    CLEAVER_RADIUS = 130 
+    CLEAVER_RADIUS = 150 
     MAX_KILLS = 1
 
     victims = []
@@ -644,77 +643,22 @@ def update_spears():
 
 
 def check_hit_boss(mx, my):
-    # Retrieve OpenGL Matrices
-    model_view = glGetDoublev(GL_MODELVIEW_MATRIX)
-    projection = glGetDoublev(GL_PROJECTION_MATRIX)
-    viewport = glGetIntegerv(GL_VIEWPORT)
-
-    winX = float(mx)
-    winY = float(viewport[3] - my)
-
-    try:
-        near = gluUnProject(winX, winY, 0.0, model_view, projection, viewport)
-        far = gluUnProject(winX, winY, 1.0, model_view, projection, viewport)
-    except:
-        return False
-
-    # Ray Origin
-    rx = near[0]
-    ry = near[1]
-    rz = near[2]
+    # Simplified hitbox check to comply with template rules.
+    # Checks if the click is within a central box on the screen
+    # since the camera always centers on the boss.
     
-    # Ray Direction Vector
-    dx = far[0] - near[0]
-    dy = far[1] - near[1]
-    dz = far[2] - near[2]
+    center_x = WINDOW_W / 2
+    center_y = WINDOW_H / 2
     
-    # Normalize Direction
-    mag = math.sqrt(dx*dx + dy*dy + dz*dz)
-    dx /= mag
-    dy /= mag
-    dz /= mag
-
-    # Check intersection with Boss Bounding Box
-    t_min = 0.0
-    t_max = 100000.0
-
-    bb_min = [
-        boss_x + BOSS_BOX_MIN[0], 
-        boss_y + BOSS_BOX_MIN[1], 
-        boss_z + BOSS_BOX_MIN[2]
-    ]
-    bb_max = [
-        boss_x + BOSS_BOX_MAX[0], 
-        boss_y + BOSS_BOX_MAX[1], 
-        boss_z + BOSS_BOX_MAX[2]
-    ]
+    # Bounding box dimensions (pixels)
+    box_width = 240  # +/- 120
+    box_height = 300 # +/- 150
     
-    origin = [rx, ry, rz]
-    direction = [dx, dy, dz]
-
-    # Check X, Y, Z slabs
-    for i in range(3):
-        if abs(direction[i]) < 0.000001:
-            # Ray is parallel to slab
-            if origin[i] < bb_min[i] or origin[i] > bb_max[i]:
-                return False
-        else:
-            inverse_direction = 1.0 / direction[i]
-            t1 = (bb_min[i] - origin[i]) * inverse_direction
-            t2 = (bb_max[i] - origin[i]) * inverse_direction
+    if abs(mx - center_x) < (box_width / 2):
+        if abs(my - center_y) < (box_height / 2):
+            return True
             
-            if t1 > t2: 
-                temp = t1
-                t1 = t2
-                t2 = temp
-            
-            t_min = max(t_min, t1)
-            t_max = min(t_max, t2)
-            
-            if t_min > t_max:
-                return False
-
-    return True
+    return False
 
 
 # -------------------------------
@@ -731,7 +675,7 @@ def can_move_to(x, y):
     return False
 
 
-def move_allies(dx, dy):
+def move_allies(dx, dy, phase_speed=8):
     global walk_phase
     any_moved = False
     
@@ -754,7 +698,7 @@ def move_allies(dx, dy):
                     any_moved = True
                     
     if any_moved: 
-        walk_phase += 8
+        walk_phase += phase_speed
 
 
 def check_ally_conversion():
@@ -805,6 +749,66 @@ def update_spawns():
 
 
 # -------------------------------
+# Logic: Cheat Mode
+# -------------------------------
+def update_cheat_movement():
+    global cheat_mode
+    
+    if cheat_mode == False:
+        return
+        
+    if game_over:
+        return
+
+    # Find a reference ally (the first one found)
+    ref_ally = None
+    for f in fighters:
+        if f["state"] == ALLY:
+            if f["alive"]:
+                ref_ally = f
+                break
+    
+    if ref_ally is None:
+        return
+
+    # Find the closest idle fighter
+    closest_idle = None
+    min_dist = 999999.0
+    
+    for f in fighters:
+        if f["state"] == IDLE:
+            if f["alive"]:
+                # Calculate distance
+                dx = f["x"] - ref_ally["x"]
+                dy = f["y"] - ref_ally["y"]
+                dist = math.sqrt(dx*dx + dy*dy)
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_idle = f
+    
+    # Move towards the closest idle fighter
+    if closest_idle is not None:
+        target_x = closest_idle["x"]
+        target_y = closest_idle["y"]
+        
+        dir_x = target_x - ref_ally["x"]
+        dir_y = target_y - ref_ally["y"]
+        
+        length = math.sqrt(dir_x*dir_x + dir_y*dir_y)
+        
+        if length > 0:
+            # Normalize and scale
+            # Further reduced speed to 0.8 for slower movement
+            speed = 0.8 
+            move_x = (dir_x / length) * speed
+            move_y = (dir_y / length) * speed
+            
+            # Reduced phase_speed to 1 to match leg animation with slower movement
+            move_allies(move_x, move_y, 1)
+
+
+# -------------------------------
 # Input Callbacks
 # -------------------------------
 def specialKeyListener(key, x, y):
@@ -823,6 +827,8 @@ def specialKeyListener(key, x, y):
 
 
 def keyboardListener(key, x, y):
+    global cheat_mode
+
     if key == b'r':
         reset_game()
         glutPostRedisplay()
@@ -831,6 +837,11 @@ def keyboardListener(key, x, y):
     if game_over: 
         return
         
+    # Toggle Cheat Mode
+    if key == b'c':
+        cheat_mode = not cheat_mode
+        print(f"Cheat Mode: {'ON' if cheat_mode else 'OFF'}")
+
     step = 12
     if key == b'w': 
         move_allies(0, step)
@@ -903,6 +914,12 @@ def showScreen():
         msg += f" ({spear_cooldown:.1f}s)"
     draw_text(10, WINDOW_H - 150, msg)
 
+    # Cheat Mode Display
+    cheat_text = "OFF"
+    if cheat_mode:
+        cheat_text = "ON"
+    draw_text(10, WINDOW_H - 180, f"Cheat Mode (C): {cheat_text}") 
+
     if game_over:
         if boss_hp <= 0:
             draw_text(WINDOW_W // 2 - 80, WINDOW_H // 2, "VICTORY! BOSS SLAIN")
@@ -935,7 +952,10 @@ def idle():
     update_boss_rotation()
     check_ally_conversion()
     update_spawns()
-    update_spears() 
+    update_spears()
+    
+    # Auto-recruit in cheat mode
+    update_cheat_movement()
     
     glutPostRedisplay()
 
