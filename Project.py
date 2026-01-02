@@ -3,6 +3,7 @@ from OpenGL.GLUT import *
 from OpenGL.GLU import *
 from OpenGL.GLUT import GLUT_BITMAP_HELVETICA_18
 import math
+import random
 
 # -------------------------------
 # Globals
@@ -11,7 +12,7 @@ WINDOW_W = 1000
 WINDOW_H = 800
 
 # Camera Variables
-camera_angle = 0
+camera_angle = -90  # Set to -90 to align WASD controls with camera view
 camera_radius = 700
 camera_height = 500
 first_person = False 
@@ -22,6 +23,11 @@ boss_y = 0.0
 boss_z = 0.0
 boss_hp = 1000
 
+# Boss Hitbox (Relative to Center)
+# Expanded to include Head (Z: 260 -> 420, Y: 70 -> 90)
+BOSS_BOX_MIN = [-90, -90, 0]
+BOSS_BOX_MAX = [90, 90, 420]
+
 quadric = None
 
 # Boss State Variables
@@ -30,7 +36,8 @@ boss_timer = 0.0
 boss_arm_angle = 0.0
 
 # Arm length calculated to hit floor at radius 300
-arm_length = 332
+# Updated to 345 to reach exactly the middle of the arena ring
+arm_length = 345
 
 boss_arm_dir = 1
 boss_did_damage = False
@@ -49,11 +56,32 @@ IDLE = 0
 walk_phase = 0.0
 SMASH_RADIUS = 220 
 
-# Spear / Combat Variables
-spear_state = "READY"   # Possible values: READY, THROWING, COOLDOWN
-spear_anim_t = 0.0      # Animation progress (0.0 to 1.0)
-spear_cooldown = 0.0
+# Weapon / Combat Variables
+weapon_state = "READY"   # Possible values: READY, ATTACKING, COOLDOWN
+weapon_anim_t = 0.0      # Animation progress (0.0 to 1.0)
+weapon_cooldown = 0.0
+attack_count = 0         # Count attacks to spawn next drop
+
 SPEAR_DAMAGE = 20
+
+# Shield Variables
+shield_active = False       # Is a shield currently on the ground?
+shield_pos = [0, 0]         # Location of the shield on ground
+allies_have_shield = False  # Do allies currently hold the shield?
+shield_durability = 0       # Smashes remaining before shield breaks
+
+# Gun Variables
+gun_active = False
+gun_pos = [0, 0]
+allies_have_gun = False
+gun_ammo = 0
+BULLET_DAMAGE = 4
+next_drop_is_gun = True 
+
+# Input State for Burst Fire
+mouse_left_down = False
+last_mouse_x = 0
+last_mouse_y = 0
 
 
 def init_fighters():
@@ -103,8 +131,11 @@ def init_fighters():
 def reset_game():
     global boss_state, boss_timer, boss_arm_angle, boss_did_damage
     global boss_facing_angle, game_over, boss_hp
-    global spear_state, spear_anim_t, spear_cooldown
-    global cheat_mode
+    global weapon_state, weapon_anim_t, weapon_cooldown, attack_count
+    global cheat_mode, next_drop_is_gun
+    global shield_active, allies_have_shield, shield_durability
+    global gun_active, allies_have_gun, gun_ammo
+    global mouse_left_down
     
     # Reset Boss Logic
     boss_state = "IDLE"
@@ -117,11 +148,24 @@ def reset_game():
     # Reset Game State
     game_over = False
     cheat_mode = False
+    mouse_left_down = False
     
-    # Reset Spear Logic
-    spear_state = "READY"
-    spear_anim_t = 0.0
-    spear_cooldown = 0.0
+    # Reset Weapons
+    weapon_state = "READY"
+    weapon_anim_t = 0.0
+    weapon_cooldown = 0.0
+    attack_count = 0
+    next_drop_is_gun = True
+    
+    # Reset Shield Logic
+    shield_active = False
+    allies_have_shield = False
+    shield_durability = 0
+    
+    # Reset Gun
+    gun_active = False
+    allies_have_gun = False
+    gun_ammo = 0
     
     # Re-initialize all characters
     init_fighters()
@@ -280,19 +324,23 @@ def draw_boss():
     glRotatef(boss_arm_angle, 1, 0, 0)
     glTranslatef(0, -arm_length * 0.5, 0)
 
-    # Upper Arm
+    # Upper Arm (Shaft)
     glPushMatrix()
-    glScalef(arm_thickness, arm_length*0.8, arm_thickness)
+    glScalef(arm_thickness, arm_length * 0.9, arm_thickness)
     glColor3f(0.4, 0.1, 0.1)
     glutSolidCube(1)
     glPopMatrix()
 
     # Hammer Head
     glPushMatrix()
-    glTranslatef(0, -arm_length * 0.45, 0) 
-    glScalef(160, 60, 120) 
-    glColor3f(0.8, 0.8, 0.8)
+    glTranslatef(0, -arm_length * 0.5, 0) 
+    
+    glPushMatrix()
+    glScalef(100, 60, 60) # Big blocky hammer
+    glColor3f(0.2, 0.2, 0.2) # Dark Iron
     glutSolidCube(1)
+    glPopMatrix()
+    
     glPopMatrix()
 
     glPopMatrix() # End Right Arm
@@ -313,21 +361,60 @@ def draw_boss():
 
 def draw_spear():
     glPushMatrix()
-    
     # Shaft
     glPushMatrix()
     glScalef(3, 3, 50)
     glColor3f(0.55, 0.27, 0.07) # Brown
     glutSolidCube(1)
     glPopMatrix()
-    
     # Tip
     glPushMatrix()
     glTranslatef(0, 0, 25)
     glColor3f(0.9, 0.9, 0.9) # Silver
     glutSolidCone(3, 15, 10, 10)
     glPopMatrix()
+    glPopMatrix()
+
+
+def draw_shield_model():
+    # Simple Rectangular/Box Shield (Since we must stick to template)
+    glPushMatrix()
+    glScalef(10, 30, 40)
+    glColor3f(0.2, 0.8, 1.0) # Cyan Shield
+    glutSolidCube(1)
+    glPopMatrix()
     
+    # Decoration on shield
+    glPushMatrix()
+    glTranslatef(2, 0, 0)
+    glScalef(8, 20, 30)
+    glColor3f(1.0, 1.0, 1.0) # White Core
+    glutSolidCube(1)
+    glPopMatrix()
+
+
+def draw_gun_model():
+    glPushMatrix()
+    # Gun Body
+    glColor3f(0.2, 0.2, 0.2) # Dark Gray
+    glScalef(6, 30, 6) # Long barrel
+    glutSolidCube(1)
+    glPopMatrix()
+    
+    # Handle/Grip
+    glPushMatrix()
+    glTranslatef(0, -10, -5)
+    glRotatef(45, 1, 0, 0)
+    glScalef(5, 10, 5)
+    glutSolidCube(1)
+    glPopMatrix()
+
+
+def draw_bullet():
+    glPushMatrix()
+    glColor3f(1.0, 1.0, 0.0) # Yellow bullet
+    glScalef(3, 8, 3)
+    glutSolidCube(1)
     glPopMatrix()
 
 
@@ -350,9 +437,9 @@ def draw_fighters():
 
         # Set Color based on State
         if f["state"] == ALLY:
-            glColor3f(1.0, 0.85, 0.0) # Yellow
+            glColor3f(1.0, 0.85, 0.0) # Yellow (Moving)
         else:
-            glColor3f(0.95, 0.95, 0.95) # White
+            glColor3f(1.0, 1.0, 0.6) # Pale Yellow (Idle)
 
         # Body
         glPushMatrix()
@@ -367,71 +454,118 @@ def draw_fighters():
         gluSphere(quadric, 6, 12, 12)
         glPopMatrix()
 
-        # --- Draw Arms ---
+        # --- Draw Arms & Weapons ---
         if f["state"] == ALLY:
-            # Determine Arm Rotation for Throwing
-            arm_rot = 0
-            if spear_state == "THROWING":
-                arm_rot = -45 - (spear_anim_t * 90)
             
-            # Right Arm (Weapon Arm)
-            glPushMatrix()
-            glTranslatef(10, 0, 24) # Shoulder
-            
-            # Rotate Arm
-            glPushMatrix()
-            glRotatef(arm_rot, 1, 0, 0) 
-            
-            # Arm Shape
-            glPushMatrix()
-            glScalef(4, 4, 16)
-            glutSolidCube(1)
-            glPopMatrix()
-
-            # Draw Spear in hand if Ready
-            if spear_state == "READY":
+            # --- GUN MODE (Two Hands) ---
+            if allies_have_gun:
+                # Calculate recoil/shooting anim
+                gun_offset = 0
+                if weapon_state == "ATTACKING":
+                    gun_offset = weapon_anim_t * 5 # Slight kickback visual
+                
+                # Right Arm (Holding Gun Back)
                 glPushMatrix()
-                glTranslatef(0, 10, -5)
-                glRotatef(-90, 1, 0, 0)
-                draw_spear()
+                glTranslatef(10, 0, 24)
+                glRotatef(-45, 1, 0, 0) # Point forward
+                glRotatef(-20, 0, 1, 0) # Angle inward
+                glPushMatrix()
+                glScalef(4, 4, 16)
+                glutSolidCube(1)
                 glPopMatrix()
-            
-            glPopMatrix() # End Arm Rotation
-
-            # Draw Projectile Spear if Throwing
-            if spear_state == "THROWING":
-                dist_to_boss = math.sqrt(x*x + y*y)
-                travel_dist = (dist_to_boss - 20) * spear_anim_t
-                height_offset = 120 * spear_anim_t
-
-                glPushMatrix()
-                glTranslatef(0, travel_dist, height_offset)
-                glRotatef(-90, 1, 0, 0)
-                glRotatef(-15, 1, 0, 0)
-                draw_spear()
                 glPopMatrix()
 
-            glPopMatrix() # End Shoulder
+                # Left Arm (Holding Gun Front)
+                glPushMatrix()
+                glTranslatef(-10, 0, 24)
+                glRotatef(-45, 1, 0, 0) # Point forward
+                glRotatef(20, 0, 1, 0)  # Angle inward
+                glPushMatrix()
+                glScalef(4, 4, 16)
+                glutSolidCube(1)
+                glPopMatrix()
+                glPopMatrix()
+                
+                # Draw Gun in Center
+                glPushMatrix()
+                glTranslatef(0, 15 - gun_offset, 24)
+                # Removed rotation so Gun points forward (Y axis) instead of Up
+                draw_gun_model()
+                
+                # Draw Bullet if Shooting
+                if weapon_state == "ATTACKING":
+                    dist_to_boss = math.sqrt(x*x + y*y)
+                    travel_dist = (dist_to_boss - 20) * weapon_anim_t
+                    
+                    glPushMatrix()
+                    # Bullet travels forward along Y
+                    glTranslatef(0, 20 + travel_dist, 0) 
+                    draw_bullet()
+                    glPopMatrix()
+                    
+                glPopMatrix()
 
-            # Reset color (Spear drawing changes color)
-            glColor3f(1.0, 0.85, 0.0)
+            # --- SPEAR MODE (One Hand) ---
+            else:
+                arm_rot = 0
+                if weapon_state == "ATTACKING":
+                    arm_rot = -45 - (weapon_anim_t * 90)
+                
+                # Right Arm (Weapon)
+                glPushMatrix()
+                glTranslatef(10, 0, 24) 
+                glRotatef(arm_rot, 1, 0, 0) 
+                
+                glPushMatrix()
+                glScalef(4, 4, 16)
+                glutSolidCube(1)
+                glPopMatrix()
 
-            # Left Arm (Static)
-            glPushMatrix()
-            glTranslatef(-10, 0, 24)
-            glScalef(4, 4, 16)
-            glutSolidCube(1)
-            glPopMatrix()
+                if weapon_state == "READY":
+                    glPushMatrix()
+                    glTranslatef(0, 10, -5)
+                    glRotatef(-90, 1, 0, 0)
+                    draw_spear()
+                    glPopMatrix()
+                
+                glPopMatrix() 
+
+                # Flying Spear
+                if weapon_state == "ATTACKING":
+                    dist_to_boss = math.sqrt(x*x + y*y)
+                    travel_dist = (dist_to_boss - 20) * weapon_anim_t
+                    height_offset = 120 * weapon_anim_t
+
+                    glPushMatrix()
+                    glTranslatef(0, travel_dist, height_offset)
+                    glRotatef(-90, 1, 0, 0)
+                    glRotatef(-15, 1, 0, 0)
+                    draw_spear()
+                    glPopMatrix()
+
+                # Left Arm (Shield or Idle)
+                glColor3f(1.0, 0.85, 0.0) # Reset color
+                glPushMatrix()
+                glTranslatef(-10, 0, 24)
+                glScalef(4, 4, 16)
+                glutSolidCube(1)
+                glPopMatrix()
+                
+                # Shield
+                if allies_have_shield:
+                    glPushMatrix()
+                    glTranslatef(-15, 5, 20) 
+                    glRotatef(15, 0, 1, 0)
+                    draw_shield_model()
+                    glPopMatrix()
 
         else:
-            # Idle Fighter Arms (Both Static)
-            # Left
+            # Idle Fighter Arms (Static)
             glPushMatrix()
             glTranslatef(-10, 0, 24)
             glScalef(4, 4, 16)
             glutSolidCube(1)
             glPopMatrix()
-            # Right
             glPushMatrix()
             glTranslatef(10, 0, 24)
             glScalef(4, 4, 16)
@@ -484,7 +618,6 @@ def update_boss_attack():
     elif boss_state == "SMASH":
         boss_arm_angle += 5.5
         
-        # Check damage when arm swings past 20 degrees
         if boss_arm_angle >= 20:
             if not boss_did_damage:
                  boss_smash_damage()
@@ -501,7 +634,6 @@ def update_boss_attack():
             boss_timer = 0.0
             boss_did_damage = False
 
-    # Keep angle within limits
     if boss_arm_angle < -90:
         boss_arm_angle = -90
     if boss_arm_angle > 35:
@@ -511,13 +643,11 @@ def update_boss_attack():
 def update_boss_rotation():
     global boss_facing_angle
     
-    # Do not rotate while attacking
     if boss_state == "SMASH":
         return
     if boss_state == "COOLDOWN":
         return
 
-    # Find closest Ally
     closest_fighter = None
     min_dist = 999999
     
@@ -527,137 +657,184 @@ def update_boss_rotation():
                 dx = f["x"]
                 dy = f["y"]
                 dist = math.sqrt(dx*dx + dy*dy)
-                
                 if dist < min_dist:
                     min_dist = dist
                     closest_fighter = f
 
     if closest_fighter is not None:
-        # Calculate target angle
         y = closest_fighter["y"]
         x = closest_fighter["x"]
-        
         target_angle = math.degrees(math.atan2(y, x)) + 90
         diff = target_angle - boss_facing_angle
-        
-        # Normalize difference to find shortest rotation path
-        while diff > 180: 
+        while diff > 180:
             diff -= 360
-        while diff < -180: 
+        while diff < -180:
             diff += 360
-            
         boss_facing_angle += diff * 0.15
 
 
 def boss_smash_damage():
-    global boss_did_damage
+    global boss_did_damage, shield_durability, allies_have_shield
     
-    if boss_did_damage: 
+    if boss_did_damage:
         return
 
-    # Calculate Hit Position relative to Boss
+    # Shield Check
+    if allies_have_shield:
+        print("BLOCKED BY SHIELD!")
+        shield_durability -= 1
+        if shield_durability <= 0:
+            allies_have_shield = False
+            print("SHIELD BROKEN!")
+        boss_did_damage = True
+        return 
+
+    # Damage Logic
     local_x = 95
     local_y = -285 
-    
     theta = math.radians(boss_facing_angle)
-    
-    # Rotate offset by boss facing angle
     rot_x = local_x * math.cos(theta) - local_y * math.sin(theta)
     rot_y = local_x * math.sin(theta) + local_y * math.cos(theta)
-    
     hit_x = boss_x + rot_x
     hit_y = boss_y + rot_y
-    
     CLEAVER_RADIUS = 150 
-    MAX_KILLS = 1
+    
+    total_alive = 0
+    for f in fighters:
+        if f["state"] == ALLY:
+            if f["alive"]:
+                total_alive += 1
+    
+    MAX_KILLS = int(math.ceil(total_alive * 0.2))
 
     victims = []
-    
-    # Find all allies in range
     for f in fighters:
-        if f["alive"] == False: 
+        if f["alive"] == False:
             continue
-        if f["state"] != ALLY: 
+        if f["state"] != ALLY:
             continue
-            
         dx = f["x"] - hit_x
         dy = f["y"] - hit_y
         dist = math.sqrt(dx*dx + dy*dy)
-        
-        if dist <= CLEAVER_RADIUS: 
+        if dist <= CLEAVER_RADIUS:
             victims.append((dist, f))
     
-    # Sort closest first
     victims.sort(key=lambda v: v[0])
-    
     killed_count = 0
     for item in victims:
-        dist = item[0]
-        fighter = item[1]
-        
         if killed_count < MAX_KILLS:
-            fighter["alive"] = False
+            item[1]["alive"] = False
             killed_count += 1
-        else: 
+        else:
             break
             
     boss_did_damage = True
 
 
 # -------------------------------
-# Logic: Spears & Combat
+# Logic: Weapons & Combat
 # -------------------------------
-def update_spears():
-    global spear_state, spear_anim_t, spear_cooldown, boss_hp, game_over
+def update_weapons():
+    global weapon_state, weapon_anim_t, weapon_cooldown, boss_hp, game_over
+    global attack_count, shield_active, shield_pos
+    global gun_active, gun_pos, gun_ammo, allies_have_gun, next_drop_is_gun
+    global mouse_left_down, last_mouse_x, last_mouse_y
 
-    if spear_state == "THROWING":
-        spear_anim_t += 0.01 # Slower speed (reduced from 0.02)
+    # Burst Fire Check
+    if allies_have_gun:
+        if mouse_left_down:
+            if weapon_state == "READY":
+                if check_hit_boss(last_mouse_x, last_mouse_y):
+                    weapon_state = "ATTACKING"
+
+    if weapon_state == "ATTACKING":
+        # Bullet moves faster (0.1) than Spear (0.01)
+        speed = 0.01
+        if allies_have_gun:
+            speed = 0.1
+            
+        weapon_anim_t += speed 
         
-        if spear_anim_t >= 1.0:
-            # Animation complete, impact boss
+        if weapon_anim_t >= 1.0:
+            # Hit Boss
             ally_count = 0
             for f in fighters:
                 if f["state"] == ALLY:
                     if f["alive"]:
                         ally_count += 1
             
-            damage = ally_count * SPEAR_DAMAGE
-            boss_hp -= damage
+            damage_per_unit = SPEAR_DAMAGE
+            if allies_have_gun:
+                damage_per_unit = BULLET_DAMAGE
+                
+            damage = ally_count * damage_per_unit
             
+            if damage > 300:
+                damage = 300
+            
+            boss_hp -= damage
             if boss_hp <= 0: 
                 boss_hp = 0
                 game_over = True
             
-            print("Boss Hit!")
-            print(f"Damage Dealt: {damage}")
-            print(f"HP Remaining: {boss_hp}")
+            print(f"Boss Hit! Damage: {damage}")
             
-            spear_state = "COOLDOWN"
-            spear_cooldown = 1.0 
-            spear_anim_t = 0.0
+            # Ammo / Cooldown Logic
+            if allies_have_gun:
+                gun_ammo -= 1
+                if gun_ammo <= 0:
+                    allies_have_gun = False
+                    print("Out of Ammo! Switching to Spear.")
+                weapon_cooldown = 0.2 # Fast gun cooldown
+            else:
+                weapon_cooldown = 1.0 # Spear cooldown
+                
+            weapon_state = "COOLDOWN"
+            weapon_anim_t = 0.0
+            
+            # --- Spawn Logic ---
+            # Only count spear throws for spawning
+            if not allies_have_gun:
+                attack_count += 1
+                if attack_count >= 4:
+                    # Alternating Spawn
+                    if next_drop_is_gun:
+                        if not gun_active:
+                            if not allies_have_gun:
+                                gun_active = True
+                                angle = random.randint(0, 360)
+                                r = 250
+                                gun_pos[0] = r * math.cos(math.radians(angle))
+                                gun_pos[1] = r * math.sin(math.radians(angle))
+                                print("Gun Spawned!")
+                                next_drop_is_gun = False # Next time spawn Shield
+                    else:
+                        if not shield_active:
+                            if not allies_have_shield:
+                                shield_active = True
+                                angle = random.randint(0, 360)
+                                r = 250
+                                shield_pos[0] = r * math.cos(math.radians(angle))
+                                shield_pos[1] = r * math.sin(math.radians(angle))
+                                print("Shield Spawned!")
+                                next_drop_is_gun = True # Next time spawn Gun
+                    
+                    attack_count = 0
 
-    elif spear_state == "COOLDOWN":
-        spear_cooldown -= 0.02 
-        if spear_cooldown <= 0:
-            spear_state = "READY"
+    elif weapon_state == "COOLDOWN":
+        weapon_cooldown -= 0.02 
+        if weapon_cooldown <= 0:
+            weapon_state = "READY"
 
 
 def check_hit_boss(mx, my):
-    # Simplified hitbox check to comply with template rules.
-    # Checks if the click is within a central box on the screen
-    # since the camera always centers on the boss.
-    
     center_x = WINDOW_W / 2
     center_y = WINDOW_H / 2
-    
-    # Bounding box dimensions (pixels)
-    box_width = 240  # +/- 120
-    box_height = 300 # +/- 150
-    
+    box_width = 300  
+    box_height = 550 
     if abs(mx - center_x) < (box_width / 2):
         if abs(my - center_y) < (box_height / 2):
             return True
-            
     return False
 
 
@@ -666,12 +843,9 @@ def check_hit_boss(mx, my):
 # -------------------------------
 def can_move_to(x, y):
     r = math.sqrt(x*x + y*y)
-    
-    # Check boundaries (Donut shape)
     if r > (180 + 15):
         if r < (420 - 15):
             return True
-    
     return False
 
 
@@ -679,72 +853,84 @@ def move_allies(dx, dy, phase_speed=8):
     global walk_phase
     any_moved = False
     
-    # Reset moving flag
     for f in fighters:
-        if f["state"] == ALLY: 
+        if f["state"] == ALLY:
             f["moving"] = False
 
-    # Attempt move
     for f in fighters:
         if f["state"] == ALLY:
             if f["alive"]:
                 nx = f["x"] + dx
                 ny = f["y"] + dy
-                
                 if can_move_to(nx, ny):
                     f["x"] = nx
                     f["y"] = ny
                     f["moving"] = True
                     any_moved = True
-                    
-    if any_moved: 
+    if any_moved:
         walk_phase += phase_speed
 
 
 def check_ally_conversion():
+    global shield_active, allies_have_shield, shield_durability
+    global gun_active, allies_have_gun, gun_ammo
+    
     for f in fighters:
-        # Only check alive allies against idle fighters
-        if f["state"] != ALLY: 
+        if f["state"] != ALLY:
             continue
-        if not f["alive"]: 
+        if not f["alive"]:
             continue
             
+        # 1. Idle Fighter Pickup
         for other in fighters:
             if other["state"] == IDLE:
                 if other["alive"]:
                     dx = f["x"] - other["x"]
                     dy = f["y"] - other["y"]
                     dist = math.sqrt(dx*dx + dy*dy)
-                    
                     if dist < 22:
                         other["state"] = ALLY
                         other["moving"] = False
-                        
-                        # Handle Respawn Logic
                         if "spawn_id" in other:
                             s_id = other["spawn_id"]
                             spawn_points[s_id]["timer"] = 30.0
                             del other["spawn_id"]
+                            
+        # 2. Shield Pickup
+        if shield_active:
+            dx = f["x"] - shield_pos[0]
+            dy = f["y"] - shield_pos[1]
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist < 30: 
+                print("Shield Picked Up!")
+                shield_active = False
+                allies_have_shield = True
+                allies_have_gun = False # Drop gun if picked up shield
+                shield_durability = 3
+
+        # 3. Gun Pickup
+        if gun_active:
+            dx = f["x"] - gun_pos[0]
+            dy = f["y"] - gun_pos[1]
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist < 30:
+                print("Gun Picked Up!")
+                gun_active = False
+                allies_have_gun = True
+                allies_have_shield = False # Drop shield if picked up gun
+                gun_ammo = 20
 
 
 def update_spawns():
     for i in range(len(spawn_points)):
         sp = spawn_points[i]
-        
         if sp["timer"] > 0:
             sp["timer"] -= 0.02
-            
             if sp["timer"] <= 0:
-                # Spawn new idle fighter
-                fighter = {
-                    "x": sp["x"], 
-                    "y": sp["y"],
-                    "state": IDLE, 
-                    "alive": True, 
-                    "moving": False,
-                    "spawn_id": i
-                }
-                fighters.append(fighter)
+                fighters.append({
+                    "x": sp["x"], "y": sp["y"],
+                    "state": IDLE, "alive": True, "moving": False, "spawn_id": i
+                })
                 sp["timer"] = 0
 
 
@@ -753,59 +939,43 @@ def update_spawns():
 # -------------------------------
 def update_cheat_movement():
     global cheat_mode
-    
-    if cheat_mode == False:
+    if not cheat_mode:
         return
-        
     if game_over:
         return
 
-    # Find a reference ally (the first one found)
     ref_ally = None
     for f in fighters:
         if f["state"] == ALLY:
             if f["alive"]:
                 ref_ally = f
                 break
-    
     if ref_ally is None:
         return
 
-    # Find the closest idle fighter
     closest_idle = None
     min_dist = 999999.0
-    
     for f in fighters:
         if f["state"] == IDLE:
             if f["alive"]:
-                # Calculate distance
                 dx = f["x"] - ref_ally["x"]
                 dy = f["y"] - ref_ally["y"]
                 dist = math.sqrt(dx*dx + dy*dy)
-                
                 if dist < min_dist:
                     min_dist = dist
                     closest_idle = f
     
-    # Move towards the closest idle fighter
     if closest_idle is not None:
         target_x = closest_idle["x"]
         target_y = closest_idle["y"]
-        
         dir_x = target_x - ref_ally["x"]
         dir_y = target_y - ref_ally["y"]
-        
         length = math.sqrt(dir_x*dir_x + dir_y*dir_y)
-        
         if length > 0:
-            # Normalize and scale
-            # Further reduced speed to 0.8 for slower movement
             speed = 0.8 
             move_x = (dir_x / length) * speed
             move_y = (dir_y / length) * speed
-            
-            # Reduced phase_speed to 1 to match leg animation with slower movement
-            move_allies(move_x, move_y, 1)
+            move_allies(move_x, move_y, 3)
 
 
 # -------------------------------
@@ -813,71 +983,63 @@ def update_cheat_movement():
 # -------------------------------
 def specialKeyListener(key, x, y):
     global camera_angle, camera_height
-    
-    if key == GLUT_KEY_LEFT: 
+    if key == GLUT_KEY_LEFT:
         camera_angle -= 3
-    if key == GLUT_KEY_RIGHT: 
+    if key == GLUT_KEY_RIGHT:
         camera_angle += 3
-    if key == GLUT_KEY_UP: 
+    if key == GLUT_KEY_UP:
         camera_height += 25
-    if key == GLUT_KEY_DOWN: 
+    if key == GLUT_KEY_DOWN:
         camera_height -= 25
-        
+    
     camera_height = max(120, min(camera_height, 2000))
-
 
 def keyboardListener(key, x, y):
     global cheat_mode
-
     if key == b'r':
         reset_game()
         glutPostRedisplay()
         return
-        
-    if game_over: 
+    if game_over:
         return
-        
-    # Toggle Cheat Mode
     if key == b'c':
         cheat_mode = not cheat_mode
         print(f"Cheat Mode: {'ON' if cheat_mode else 'OFF'}")
-
+    
     step = 12
-    if key == b'w': 
+    if key == b'w':
         move_allies(0, step)
-    elif key == b's': 
+    elif key == b's':
         move_allies(0, -step)
-    elif key == b'a': 
+    elif key == b'a':
         move_allies(-step, 0)
-    elif key == b'd': 
+    elif key == b'd':
         move_allies(step, 0)
 
-
 def mouseListener(button, state, x, y):
-    global spear_state, first_person
-    
-    if game_over: 
+    global weapon_state, first_person, mouse_left_down
+    global last_mouse_x, last_mouse_y
+    if game_over:
         return
     
-    # Left Click - THROW SPEAR
     if button == GLUT_LEFT_BUTTON:
         if state == GLUT_DOWN:
-            if spear_state == "READY":
+            mouse_left_down = True
+            last_mouse_x = x
+            last_mouse_y = y
+            if weapon_state == "READY":
                 if check_hit_boss(x, y):
-                    print("Aim Correct! Throwing Spears...")
-                    spear_state = "THROWING"
+                    print("Aim Correct! Attacking...")
+                    weapon_state = "ATTACKING"
                 else:
                     print("Missed Aim!")
+        elif state == GLUT_UP:
+            mouse_left_down = False
 
-    # Right Click - TOGGLE CAMERA
     if button == GLUT_RIGHT_BUTTON:
         if state == GLUT_DOWN:
             first_person = not first_person
-            
-            mode_str = "Orbit"
-            if first_person:
-                mode_str = "First Person"
-            print(f"Camera Mode: {mode_str}")
+            print(f"Camera Mode: {'First Person' if first_person else 'Orbit'}")
 
 
 # -------------------------------
@@ -886,39 +1048,55 @@ def mouseListener(button, state, x, y):
 def showScreen():
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glViewport(0, 0, WINDOW_W, WINDOW_H)
-    
     setupCamera()
 
     draw_arena()
+    
+    if shield_active:
+        glPushMatrix()
+        glTranslatef(shield_pos[0], shield_pos[1], 30)
+        glRotatef(90, 1, 0, 0)
+        draw_shield_model()
+        glPopMatrix()
+
+    if gun_active:
+        glPushMatrix()
+        glTranslatef(gun_pos[0], gun_pos[1], 10)
+        glRotatef(90, 1, 0, 0)
+        draw_gun_model()
+        glPopMatrix()
+        
     draw_boss()
     draw_fighters()
 
-    # UI Text
     cam_mode_text = "Orbit"
     if first_person:
         cam_mode_text = "First Person"
         
-    draw_text(10, WINDOW_H - 30, f"Phase-3: Spear Throwing | Cam: {cam_mode_text}")
+    draw_text(10, WINDOW_H - 30, f"Phase-4: Guns & Shields | Cam: {cam_mode_text}")
     draw_text(10, WINDOW_H - 60, f"Boss HP: {boss_hp}")
-    draw_text(10, WINDOW_H - 90, f"Boss State: {boss_state}")
     
     alive_count = 0
     for f in fighters:
         if f['alive']:
             alive_count += 1
-            
-    draw_text(10, WINDOW_H - 120, f"Alive Fighters: {alive_count}")
+    draw_text(10, WINDOW_H - 90, f"Alive Fighters: {alive_count}")
     
-    msg = "Spears: " + spear_state
-    if spear_state == "COOLDOWN": 
-        msg += f" ({spear_cooldown:.1f}s)"
-    draw_text(10, WINDOW_H - 150, msg)
+    msg = "Weapon: Spear"
+    if allies_have_gun:
+        msg = f"Weapon: Gun (Ammo: {gun_ammo})"
+    
+    if weapon_state == "COOLDOWN":
+        msg += " (Cooldown)"
+    draw_text(10, WINDOW_H - 120, msg)
 
-    # Cheat Mode Display
     cheat_text = "OFF"
     if cheat_mode:
         cheat_text = "ON"
-    draw_text(10, WINDOW_H - 180, f"Cheat Mode (C): {cheat_text}") 
+    draw_text(10, WINDOW_H - 150, f"Cheat Mode (C): {cheat_text}") 
+    
+    if allies_have_shield:
+        draw_text(10, WINDOW_H - 180, f"SHIELD ACTIVE! Blocks Left: {shield_durability}")
 
     if game_over:
         if boss_hp <= 0:
@@ -932,31 +1110,24 @@ def showScreen():
 
 def idle():
     global game_over
-    
-    # Check Game Over Conditions
     ally_count = 0
     for f in fighters:
         if f["state"] == ALLY:
             if f["alive"]:
                 ally_count += 1
-            
-    if ally_count == 0: 
+    if ally_count == 0:
         game_over = True
 
     if game_over:
         glutPostRedisplay()
         return
 
-    # Update Game Logic
     update_boss_attack()
     update_boss_rotation()
     check_ally_conversion()
     update_spawns()
-    update_spears()
-    
-    # Auto-recruit in cheat mode
+    update_weapons()
     update_cheat_movement()
-    
     glutPostRedisplay()
 
 
@@ -966,13 +1137,11 @@ def main():
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_W, WINDOW_H)
     glutInitWindowPosition(50, 50)
-    glutCreateWindow(b"Phase 3 - Spear Attack")
+    glutCreateWindow(b"Phase 4 - Guns & Shields")
 
     init_fighters()
-    
     glEnable(GL_DEPTH_TEST)
     glClearColor(0.266, 0.765, 0.996, 1.0)
-    
     quadric = gluNewQuadric()
 
     glutDisplayFunc(showScreen)
