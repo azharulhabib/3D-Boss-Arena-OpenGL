@@ -48,6 +48,7 @@ cheat_mode = False
 # Game Entities
 fighters = []
 spawn_points = [] 
+damage_texts = [] # Store active floating damage numbers
 
 # Entity States
 ALLY = 1
@@ -85,9 +86,10 @@ last_mouse_y = 0
 
 
 def init_fighters():
-    global fighters, spawn_points
+    global fighters, spawn_points, damage_texts
     fighters = []
     spawn_points = []
+    damage_texts = []
 
     # Create 6 Allies (Yellow Group)
     for i in range(6):
@@ -194,6 +196,78 @@ def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
     glMatrixMode(GL_PROJECTION)
     glPopMatrix()
     glMatrixMode(GL_MODELVIEW)
+
+
+def draw_health_bar():
+    # Save current matrix state
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, WINDOW_W, 0, WINDOW_H)
+    
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    
+    # Disable depth test to ensure UI draws on top
+    glDisable(GL_DEPTH_TEST)
+
+    # Bar Dimensions
+    bar_width = 400
+    bar_height = 20
+    x = (WINDOW_W - bar_width) / 2
+    y = WINDOW_H - 40 # Top padding
+
+    # Draw Background (Dark Red)
+    glColor3f(0.5, 0.0, 0.0) 
+    glBegin(GL_QUADS)
+    glVertex2f(x, y)
+    glVertex2f(x + bar_width, y)
+    glVertex2f(x + bar_width, y + bar_height)
+    glVertex2f(x, y + bar_height)
+    glEnd()
+
+    # Draw Health (Green)
+    # Ensure HP doesn't go below 0 for drawing ratio
+    current_hp = boss_hp
+    if current_hp < 0:
+        current_hp = 0
+        
+    health_ratio = current_hp / 1000.0
+    current_width = bar_width * health_ratio
+    
+    if current_width > 0:
+        glColor3f(0.0, 1.0, 0.0) 
+        glBegin(GL_QUADS)
+        glVertex2f(x, y)
+        glVertex2f(x + current_width, y)
+        glVertex2f(x + current_width, y + bar_height)
+        glVertex2f(x, y + bar_height)
+        glEnd()
+
+    # Re-enable depth test
+    glEnable(GL_DEPTH_TEST)
+
+    # Restore matrix state
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+
+
+def draw_floating_damage():
+    # Temporarily disable depth test to make numbers visible through boss
+    glDisable(GL_DEPTH_TEST)
+    
+    for dt in damage_texts:
+        # Bright Red Color
+        glColor3f(1.0, 0.0, 0.0) 
+        glRasterPos3f(dt["x"], dt["y"], dt["z"])
+        
+        for ch in dt["text"]:
+            glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(ch))
+            
+    glEnable(GL_DEPTH_TEST)
 
 
 # -------------------------------
@@ -618,6 +692,7 @@ def update_boss_attack():
     elif boss_state == "SMASH":
         boss_arm_angle += 5.5
         
+        # Check damage when arm swings past 20 degrees
         if boss_arm_angle >= 20:
             if not boss_did_damage:
                  boss_smash_damage()
@@ -739,6 +814,7 @@ def update_weapons():
     global attack_count, shield_active, shield_pos
     global gun_active, gun_pos, gun_ammo, allies_have_gun, next_drop_is_gun
     global mouse_left_down, last_mouse_x, last_mouse_y
+    global damage_texts
 
     # Burst Fire Check
     if allies_have_gun:
@@ -776,6 +852,22 @@ def update_weapons():
             if boss_hp <= 0: 
                 boss_hp = 0
                 game_over = True
+            
+            # Spawn Floating Damage Text for each ally
+            for _ in range(ally_count):
+                # Spread spawn location randomly around boss
+                rx = random.uniform(-40, 40)
+                ry = random.uniform(-40, 40)
+                rz = random.uniform(260, 320) # Above head
+                
+                dt = {
+                    "text": f"-{damage_per_unit}",
+                    "x": boss_x + rx,
+                    "y": boss_y + ry,
+                    "z": boss_z + rz,
+                    "life": 1.0 # 1 second lifetime
+                }
+                damage_texts.append(dt)
             
             print(f"Boss Hit! Damage: {damage}")
             
@@ -827,6 +919,20 @@ def update_weapons():
             weapon_state = "READY"
 
 
+def update_damage_texts():
+    global damage_texts
+    to_keep = []
+    
+    for dt in damage_texts:
+        dt["z"] += 2.0  # Float up
+        dt["life"] -= 0.02
+        
+        if dt["life"] > 0:
+            to_keep.append(dt)
+            
+    damage_texts = to_keep
+
+
 def check_hit_boss(mx, my):
     center_x = WINDOW_W / 2
     center_y = WINDOW_H / 2
@@ -858,15 +964,14 @@ def move_allies(dx, dy, phase_speed=8):
             f["moving"] = False
 
     for f in fighters:
-        if f["state"] == ALLY:
-            if f["alive"]:
-                nx = f["x"] + dx
-                ny = f["y"] + dy
-                if can_move_to(nx, ny):
-                    f["x"] = nx
-                    f["y"] = ny
-                    f["moving"] = True
-                    any_moved = True
+        if f["state"] == ALLY and f["alive"]:
+            nx = f["x"] + dx
+            ny = f["y"] + dy
+            if can_move_to(nx, ny):
+                f["x"] = nx
+                f["y"] = ny
+                f["moving"] = True
+                any_moved = True
     if any_moved:
         walk_phase += phase_speed
 
@@ -876,9 +981,7 @@ def check_ally_conversion():
     global gun_active, allies_have_gun, gun_ammo
     
     for f in fighters:
-        if f["state"] != ALLY:
-            continue
-        if not f["alive"]:
+        if f["state"] != ALLY or not f["alive"]:
             continue
             
         # 1. Idle Fighter Pickup
@@ -946,10 +1049,9 @@ def update_cheat_movement():
 
     ref_ally = None
     for f in fighters:
-        if f["state"] == ALLY:
-            if f["alive"]:
-                ref_ally = f
-                break
+        if f["state"] == ALLY and f["alive"]:
+            ref_ally = f
+            break
     if ref_ally is None:
         return
 
@@ -1068,6 +1170,11 @@ def showScreen():
         
     draw_boss()
     draw_fighters()
+    
+    draw_floating_damage()
+    
+    # Draw 2D UI elements
+    draw_health_bar()
 
     cam_mode_text = "Orbit"
     if first_person:
@@ -1127,6 +1234,7 @@ def idle():
     check_ally_conversion()
     update_spawns()
     update_weapons()
+    update_damage_texts()
     update_cheat_movement()
     glutPostRedisplay()
 
